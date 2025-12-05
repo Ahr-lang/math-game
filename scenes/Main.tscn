@@ -39,6 +39,7 @@ size_flags_vertical = 3
 mouse_filter = 0
 theme_override_constants/h_separation = 10
 theme_override_constants/v_separation = 10
+metadata/_edit_use_anchors_ = true
 
 [node name="Separator" type="ColorRect" parent="MainPanel/MatrixArea/MatrixRoot"]
 z_index = 10
