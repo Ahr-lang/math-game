@@ -1,0 +1,86 @@
+[gd_scene load_steps=3 format=3 uid="uid://7x65pygempws"]
+
+[ext_resource type="Script" uid="uid://cosk31s7fsovi" path="res://scripts/main.gd" id="1_fvwan"]
+[ext_resource type="Script" uid="uid://cmu6dkrtw81e5" path="res://scripts/separator.gd" id="2_rvslj"]
+
+[node name="Main" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_fvwan")
+
+[node name="MainPanel" type="HBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="MatrixArea" type="VBoxContainer" parent="MainPanel"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="MatrixRoot" type="Control" parent="MainPanel/MatrixArea"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="MatrixContainer" type="GridContainer" parent="MainPanel/MatrixArea/MatrixRoot"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 0
+theme_override_constants/h_separation = 10
+theme_override_constants/v_separation = 10
+
+[node name="Separator" type="ColorRect" parent="MainPanel/MatrixArea/MatrixRoot"]
+z_index = 10
+custom_minimum_size = Vector2(4, 0)
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -2.0
+offset_right = 2.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = ExtResource("2_rvslj")
+
+[node name="SidePanel" type="VBoxContainer" parent="MainPanel"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="OperationText" type="Label" parent="MainPanel/SidePanel"]
+layout_mode = 2
+
+[node name="OperationLabel" type="Label" parent="MainPanel/SidePanel"]
+layout_mode = 2
+
+[node name="Number of variables" type="SpinBox" parent="MainPanel/SidePanel"]
+layout_mode = 2
+value = 3.0
+
+[node name="ReshuffleButton" type="Button" parent="MainPanel/SidePanel"]
+layout_mode = 2
+
+[node name="BackButton" type="Button" parent="MainPanel/SidePanel"]
+layout_mode = 2
+
+[node name="HistoryPanel" type="VBoxContainer" parent="MainPanel/SidePanel"]
+layout_mode = 2
+size_flags_horizontal = 8
+size_flags_vertical = 3
+
+[node name="HistoryTitle" type="Label" parent="MainPanel/SidePanel/HistoryPanel"]
+layout_mode = 2

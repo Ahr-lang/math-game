@@ -1,0 +1,16 @@
+[gd_scene load_steps=2 format=3 uid="uid://7x65pygempws"]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_fvwan"]
+
+[node name="Main" type="Control"]
+layout_mode = 3
+anchors_preset = 0
+script = ExtResource("1_fvwan")
+
+[node name="MatrixContainer" type="VBoxContainer" parent="."]
+layout_mode = 0
+offset_left = 334.0
+offset_top = 232.0
+offset_right = 374.0
+offset_bottom = 272.0
+mouse_filter = 0

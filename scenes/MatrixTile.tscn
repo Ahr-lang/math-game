@@ -1,0 +1,29 @@
+[gd_scene load_steps=4 format=3 uid="uid://b6arjyyuh6el3"]
+
+[ext_resource type="Script" uid="uid://cmj2uq183klbg" path="res://scripts/Matrix_tile.gd" id="1_o2yoo"]
+[ext_resource type="FontFile" uid="uid://dg2xsrcyovcls" path="res://fonts/Square.ttf" id="2_0a4ba"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_vdsd5"]
+
+[node name="MatrixTile" type="Panel"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_vdsd5")
+script = ExtResource("1_o2yoo")
+
+[node name="Label" type="Label" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_fonts/font = ExtResource("2_0a4ba")
+theme_override_font_sizes/font_size = 50
+horizontal_alignment = 1
+vertical_alignment = 1
