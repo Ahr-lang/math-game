@@ -693,16 +693,21 @@ func _populate_preview_grid(grid: GridContainer, state: Dictionary, _title: Stri
 	var rows_data: Array = state["rows"]
 	var colors: Array = state["colors"]
 	
-	# Configurar columnas: n coeficientes + 1 aumentada (sin espaciador ni Rk para simplificar preview)
-	# O podemos incluir Rk si queremos. Hagámoslo simple: solo números.
-	# Columnas = n + 1 (aumentada)
-	grid.columns = n + 1
+	# Configurar columnas: n coeficientes + 1 separador + 1 aumentada
+	grid.columns = n + 2
 	
 	for r in range(n):
 		var row_vals: Array = rows_data[r]
 		var color: Color = colors[r]
 		
 		for c in range(n + 1):
+			# Antes de la última columna (la aumentada), insertamos el separador
+			if c == n:
+				var sep = ColorRect.new()
+				sep.custom_minimum_size = Vector2(2, 40)
+				sep.color = Color.WHITE
+				grid.add_child(sep)
+
 			var val: Fraction = row_vals[c]
 			var lbl = Label.new()
 			lbl.text = val.to_string()
