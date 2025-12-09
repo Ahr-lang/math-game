@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3 uid="uid://7x65pygempws"]
+[gd_scene load_steps=4 format=3 uid="uid://7x65pygempws"]
 
 [ext_resource type="Script" uid="uid://cosk31s7fsovi" path="res://scripts/main.gd" id="1_fvwan"]
 [ext_resource type="Script" uid="uid://cmu6dkrtw81e5" path="res://scripts/separator.gd" id="2_rvslj"]
+[ext_resource type="FontFile" uid="uid://dg2xsrcyovcls" path="res://fonts/Square.ttf" id="3_0bbpv"]
 
 [node name="Main" type="Control"]
 layout_mode = 3
@@ -62,10 +63,13 @@ script = ExtResource("2_rvslj")
 layout_mode = 2
 size_flags_horizontal = 3
 
+[node name="OperationLabel" type="Label" parent="MainPanel/SidePanel"]
+layout_mode = 2
+
 [node name="OperationText" type="Label" parent="MainPanel/SidePanel"]
 layout_mode = 2
 
-[node name="OperationLabel" type="Label" parent="MainPanel/SidePanel"]
+[node name="OperationFormula" type="Label" parent="MainPanel/SidePanel"]
 layout_mode = 2
 
 [node name="Number of variables" type="SpinBox" parent="MainPanel/SidePanel"]
@@ -78,10 +82,13 @@ layout_mode = 2
 [node name="BackButton" type="Button" parent="MainPanel/SidePanel"]
 layout_mode = 2
 
+[node name="HistoryTitle" type="Label" parent="MainPanel/SidePanel"]
+layout_direction = 2
+layout_mode = 2
+size_flags_horizontal = 4
+theme_override_fonts/font = ExtResource("3_0bbpv")
+text = "History"
+
 [node name="HistoryPanel" type="VBoxContainer" parent="MainPanel/SidePanel"]
 layout_mode = 2
-size_flags_horizontal = 8
 size_flags_vertical = 3
-
-[node name="HistoryTitle" type="Label" parent="MainPanel/SidePanel/HistoryPanel"]
-layout_mode = 2
