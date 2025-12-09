@@ -66,11 +66,14 @@ size_flags_horizontal = 3
 [node name="OperationLabel" type="Label" parent="MainPanel/SidePanel"]
 layout_mode = 2
 
-[node name="OperationText" type="Label" parent="MainPanel/SidePanel"]
+[node name="OperationText" type="RichTextLabel" parent="MainPanel/SidePanel"]
 layout_mode = 2
+bbcode_enabled = true
+fit_content = true
 
-[node name="OperationFormula" type="Label" parent="MainPanel/SidePanel"]
+[node name="OperationFormula" type="RichTextLabel" parent="MainPanel/SidePanel"]
 layout_mode = 2
+bbcode_enabled = true
 
 [node name="Number of variables" type="SpinBox" parent="MainPanel/SidePanel"]
 layout_mode = 2

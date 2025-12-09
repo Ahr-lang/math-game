@@ -16,7 +16,7 @@ extends Control
 # Nodo Separator (la línea blanca vertical que se dibuja en medio del hueco)
 @onready var separator        = $MainPanel/MatrixArea/MatrixRoot/Separator
 @onready var history_panel    = $MainPanel/SidePanel/HistoryPanel
-
+@onready var back_button      = $MainPanel/SidePanel/BackButton
 
 # --------- Escenas / scripts auxiliares ---------
 
@@ -50,6 +50,10 @@ var hovered_row_for_add_target: int = -1
 var scalar_input_buffer: String = ""
 var current_visual_columns: int = 0
 
+# Historial de estados para Undo y Preview
+# Cada elemento es un Dictionary: { "desc": String, "before": Dictionary, "after": Dictionary }
+var history_log: Array = []
+
 # Ancho extra del hueco entre la última columna normal y la aumentada
 # Este espacio es donde va a vivir la línea blanca
 const EXTRA_COLUMN_GAP: float = 40.0
@@ -62,8 +66,20 @@ func _ready():
 	# Valor inicial del SpinBox (por ejemplo 3 variables)
 	variable_input.value = 3
 
+	# Habilitar BBCode para colorear fórmulas en el texto de operación
+	if operation_text is RichTextLabel:
+		var rtl := operation_text as RichTextLabel
+		rtl.bbcode_enabled = true
+		rtl.scroll_active = false
+		rtl.add_theme_color_override("default_color", Color.WHITE)
+
 	# Conectamos el botón de reshuffle al método que vuelve a crear la matriz
 	reshuffle_button.pressed.connect(_on_reshuffle_pressed)
+	
+	# Conectamos el botón de Back
+	if back_button:
+		back_button.pressed.connect(_on_back_pressed)
+		back_button.text = "Deshacer"
 
 	# Cada vez que el GridContainer cambie de tamaño, actualizamos la posición del separador
 	matrix_container.resized.connect(_schedule_separator_update)
@@ -111,6 +127,8 @@ func _create_matrix():
 	row_colors.clear()
 	_reset_swap_selection()
 	_clear_history()
+	history_log.clear()
+	
 	for child in matrix_container.get_children():
 		child.queue_free()
 
@@ -197,6 +215,7 @@ func _create_matrix():
 
 	# Después de construir todo, programamos actualización del separador
 	_schedule_separator_update()
+	_check_and_update_solved_rows()
 
 
 # En vez de llamar directamente a _update_separator_position, usamos call_deferred
@@ -392,13 +411,25 @@ func _handle_row_swap_click(row_index: int) -> void:
 	var n := int(variable_input.value)
 	var from_row := selected_row_for_swap
 	var to_row := row_index
+	
+	var state_before = _capture_state()
+	
 	RowOperationsScript.swap_rows(matrix_container, n, from_row, to_row)
-	_add_history_entry("Intercambio: R%d <-> R%d" % [from_row + 1, to_row + 1])
+
+	# Actualizamos también el array de colores para que coincida con el cambio visual
+	var tmp_color = row_colors[from_row]
+	row_colors[from_row] = row_colors[to_row]
+	row_colors[to_row] = tmp_color
+	
+	var state_after = _capture_state()
+
+	_add_history_entry("Intercambio: R%d <-> R%d" % [from_row + 1, to_row + 1], state_before, state_after)
 
 	# Limpiamos resaltados tras el intercambio
 	_highlight_row(from_row, false)
 	_highlight_row(to_row, false)
 	selected_row_for_swap = -1
+	_check_and_update_solved_rows()
 	_refresh_operation_ui()
 
 
@@ -435,12 +466,17 @@ func _handle_row_add_click(row_index: int) -> void:
 	if row_index != selected_row_for_add_source:
 		selected_row_for_add_target = row_index
 		var n := int(variable_input.value)
+		
+		var state_before = _capture_state()
+		
 		if interaction_mode == InteractionMode.SUBTRACT:
 			RowSubtractorScript.subtract_rows(matrix_container, n, selected_row_for_add_source, selected_row_for_add_target, row_colors)
-			_add_history_entry("R%d = R%d - R%d" % [selected_row_for_add_target + 1, selected_row_for_add_target + 1, selected_row_for_add_source + 1])
+			var state_after = _capture_state()
+			_add_history_entry("R%d = R%d - R%d" % [selected_row_for_add_target + 1, selected_row_for_add_target + 1, selected_row_for_add_source + 1], state_before, state_after)
 		else:
 			RowAdderScript.add_rows(matrix_container, n, selected_row_for_add_source, selected_row_for_add_target, row_colors)
-			_add_history_entry("R%d = R%d + R%d" % [selected_row_for_add_target + 1, selected_row_for_add_target + 1, selected_row_for_add_source + 1])
+			var state_after = _capture_state()
+			_add_history_entry("R%d = R%d + R%d" % [selected_row_for_add_target + 1, selected_row_for_add_target + 1, selected_row_for_add_source + 1], state_before, state_after)
 
 		# Limpiar selecciones y resaltados
 		_highlight_row(selected_row_for_add_source, false)
@@ -448,6 +484,7 @@ func _handle_row_add_click(row_index: int) -> void:
 		selected_row_for_add_source = -1
 		selected_row_for_add_target = -1
 		hovered_row_for_add_target = -1
+		_check_and_update_solved_rows()
 		_refresh_operation_ui()
 
 
@@ -494,16 +531,202 @@ func _clear_history() -> void:
 		child.queue_free()
 
 
-func _add_history_entry(text: String) -> void:
+func _add_history_entry(text: String, state_before: Dictionary, state_after: Dictionary) -> void:
 	if history_panel == null:
 		return
 
-	var label := Label.new()
-	label.text = text
-	history_panel.add_child(label)
+	# Guardamos en el log lógico
+	history_log.append({
+		"desc": text,
+		"before": state_before,
+		"after": state_after
+	})
+
+	# Creamos el elemento visual
+	var entry_idx := history_log.size() - 1
+	
+	# Usamos un Button plano para poder detectar hover
+	var btn := Button.new()
+	btn.text = text
+	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	# Estilo plano para que parezca label pero interactivo
+	btn.flat = true
+	# Conectamos señales para el preview
+	btn.mouse_entered.connect(Callable(self, "_on_history_entry_hover").bind(entry_idx, btn))
+	btn.mouse_exited.connect(Callable(self, "_on_history_entry_exit"))
+	
+	history_panel.add_child(btn)
+
+
+func _capture_state() -> Dictionary:
+	var n := int(variable_input.value)
+	var rows_data: Array = []
+	for r in range(n):
+		# _get_row_values devuelve Array[Fraction]
+		rows_data.append(_get_row_values(r, n))
+	
+	return {
+		"n": n,
+		"rows": rows_data,
+		"colors": row_colors.duplicate()
+	}
+
+
+func _restore_state(state: Dictionary) -> void:
+	var n: int = state["n"]
+	# Asumimos que n no cambia en medio de la partida, pero por seguridad:
+	if n != int(variable_input.value):
+		return # O manejar cambio de tamaño
+		
+	row_colors = state["colors"].duplicate()
+	var rows_data: Array = state["rows"]
+	
+	# Restauramos valores en los tiles
+	var logical_total := n + 1
+	var children := matrix_container.get_children()
+	
+	for r in range(n):
+		var row_vals: Array = rows_data[r]
+		var r_color: Color = _row_color(r)
+		var is_last_row := (r == n - 1)
+		
+		for col in range(logical_total):
+			var idx := _child_index_for_row_col(r, col, current_visual_columns, n)
+			if idx >= 0 and idx < children.size():
+				var tile = children[idx]
+				var val: Fraction = row_vals[col]
+				
+				if tile.has_method("set_value"):
+					tile.set_value(val, r_color, is_last_row, col, logical_total)
+				elif tile.has_node("Label"):
+					tile.get_node("Label").text = val.to_string()
+
+	_check_and_update_solved_rows()
+
+
+func _on_back_pressed() -> void:
+	if history_log.is_empty():
+		return
+		
+	var last_entry = history_log.pop_back()
+	# Restauramos el estado "before" de esa acción
+	_restore_state(last_entry["before"])
+	
+	# Eliminamos el último botón del panel visual
+	var count = history_panel.get_child_count()
+	if count > 0:
+		var child = history_panel.get_child(count - 1)
+		history_panel.remove_child(child)
+		child.queue_free()
+	
+	_refresh_operation_ui()
+
+
+# --- Preview Window Logic ---
+var _preview_popup: PopupPanel
+var _preview_container: HBoxContainer
+var _preview_before_grid: GridContainer
+var _preview_after_grid: GridContainer
+
+func _on_history_entry_hover(idx: int, btn: Control) -> void:
+	if idx < 0 or idx >= history_log.size():
+		return
+		
+	var entry = history_log[idx]
+	_show_preview(entry["before"], entry["after"], btn)
+
+func _on_history_entry_exit() -> void:
+	if _preview_popup:
+		_preview_popup.hide()
+
+func _show_preview(state_before: Dictionary, state_after: Dictionary, anchor_node: Control) -> void:
+	if _preview_popup == null:
+		_create_preview_window()
+	
+	_populate_preview_grid(_preview_before_grid, state_before, "Antes")
+	_populate_preview_grid(_preview_after_grid, state_after, "Después")
+	
+	# Posicionar cerca del botón
+	var global_rect = anchor_node.get_global_rect()
+	var pos = global_rect.position
+	pos.x += global_rect.size.x + 10 # A la derecha del historial
+	
+	_preview_popup.position = Vector2i(pos)
+	_preview_popup.popup()
+
+func _create_preview_window() -> void:
+	_preview_popup = PopupPanel.new()
+	# Configurar estilo si es necesario
+	# En Godot 4, PopupPanel es un Window y no tiene mouse_filter
+	
+	_preview_container = HBoxContainer.new()
+	_preview_container.add_theme_constant_override("separation", 20)
+	_preview_popup.add_child(_preview_container)
+	
+	var vbox1 = VBoxContainer.new()
+	var lbl1 = Label.new()
+	lbl1.text = "ANTES"
+	lbl1.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox1.add_child(lbl1)
+	_preview_before_grid = GridContainer.new()
+	vbox1.add_child(_preview_before_grid)
+	_preview_container.add_child(vbox1)
+	
+	var vbox2 = VBoxContainer.new()
+	var lbl2 = Label.new()
+	lbl2.text = "DESPUÉS"
+	lbl2.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox2.add_child(lbl2)
+	_preview_after_grid = GridContainer.new()
+	vbox2.add_child(_preview_after_grid)
+	_preview_container.add_child(vbox2)
+	
+	add_child(_preview_popup)
+
+func _populate_preview_grid(grid: GridContainer, state: Dictionary, _title: String) -> void:
+	# Limpiar grid
+	for c in grid.get_children():
+		grid.remove_child(c)
+		c.queue_free()
+		
+	var n: int = state["n"]
+	var rows_data: Array = state["rows"]
+	var colors: Array = state["colors"]
+	
+	# Configurar columnas: n coeficientes + 1 aumentada (sin espaciador ni Rk para simplificar preview)
+	# O podemos incluir Rk si queremos. Hagámoslo simple: solo números.
+	# Columnas = n + 1 (aumentada)
+	grid.columns = n + 1
+	
+	for r in range(n):
+		var row_vals: Array = rows_data[r]
+		var color: Color = colors[r]
+		
+		for c in range(n + 1):
+			var val: Fraction = row_vals[c]
+			var lbl = Label.new()
+			lbl.text = val.to_string()
+			lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			lbl.custom_minimum_size = Vector2(40, 40) # Tamaño fijo pequeño
+			
+			# Fondo de color
+			var style = StyleBoxFlat.new()
+			style.bg_color = Color(0.1, 0.1, 0.1)
+			style.border_color = color
+			style.set_border_width_all(2)
+			lbl.add_theme_stylebox_override("normal", style)
+			lbl.add_theme_color_override("font_color", color)
+			
+			grid.add_child(lbl)
 
 
 func _set_interaction_mode(mode: int) -> void:
+	# Quitamos el foco de cualquier botón o input para evitar pulsaciones accidentales (ej. Enter)
+	var focus_owner = get_viewport().gui_get_focus_owner()
+	if focus_owner:
+		focus_owner.release_focus()
+
 	if interaction_mode == mode:
 		return
 
@@ -525,6 +748,12 @@ func _handle_scalar_key_input(event: InputEventKey) -> void:
 		KEY_MINUS, KEY_KP_SUBTRACT:
 			if scalar_input_buffer == "":
 				scalar_input_buffer = "-"
+		KEY_SLASH, KEY_KP_DIVIDE:
+			if not scalar_input_buffer.contains("/"):
+				if scalar_input_buffer == "":
+					pass # No empezar con /
+				else:
+					scalar_input_buffer += "/"
 		KEY_BACKSPACE:
 			if scalar_input_buffer.length() > 0:
 				scalar_input_buffer = scalar_input_buffer.substr(0, scalar_input_buffer.length() - 1)
@@ -543,18 +772,24 @@ func _apply_scalar_multiplier() -> void:
 	if scalar_input_buffer == "" or scalar_input_buffer == "-":
 		return
 
-	var val := float(scalar_input_buffer)
+	var val := Fraction.from_string(scalar_input_buffer)
 	var n := int(variable_input.value)
+	
+	var state_before = _capture_state()
+	
 	if interaction_mode == InteractionMode.DIVIDE:
-		if val == 0.0:
+		if val.num == 0:
 			return
 		RowDividerScript.divide_row(matrix_container, n, selected_row_for_scalar, val, row_colors)
-		_add_history_entry("R%d / %s" % [selected_row_for_scalar + 1, scalar_input_buffer])
+		var state_after = _capture_state()
+		_add_history_entry("R%d / %s" % [selected_row_for_scalar + 1, scalar_input_buffer], state_before, state_after)
 	else:
 		RowScalarScript.multiply_row(matrix_container, n, selected_row_for_scalar, val, row_colors)
-		_add_history_entry("R%d * %s" % [selected_row_for_scalar + 1, scalar_input_buffer])
+		var state_after = _capture_state()
+		_add_history_entry("R%d * %s" % [selected_row_for_scalar + 1, scalar_input_buffer], state_before, state_after)
 
 	scalar_input_buffer = ""
+	_check_and_update_solved_rows()
 	_refresh_operation_ui()
 
 
@@ -562,111 +797,217 @@ func _refresh_operation_ui() -> void:
 	if operation_label == null or operation_text == null:
 		return
 
+	var text_out := ""
+
 	match interaction_mode:
 		InteractionMode.SWITCH:
 			operation_label.text = "Modo: Intercambio de filas"
 			if selected_row_for_swap == -1:
-				operation_text.text = "Haz clic en una fila y luego en otra para intercambiar. (B multiplicar, D dividir, A sumar, F restar)"
+				text_out = "Haz clic en una fila y luego en otra para intercambiar. (B multiplicar, D dividir, A sumar, F restar)"
 			else:
-				operation_text.text = "Fila seleccionada: R%d. Clic en otra fila para intercambiar, o en la misma para cancelar. (B multiplicar, D dividir, A sumar, F restar)" % [selected_row_for_swap + 1]
+				text_out = "Fila seleccionada: R%d. Clic en otra fila para intercambiar, o en la misma para cancelar. (B multiplicar, D dividir, A sumar, F restar)" % [selected_row_for_swap + 1]
+
 		InteractionMode.MULTIPLY:
 			operation_label.text = "Modo: Multiplicar fila"
 			var scalar_display := scalar_input_buffer if scalar_input_buffer != "" else "_"
 			if selected_row_for_scalar == -1:
-				operation_text.text = "Selecciona una fila y escribe un número. Valor: %s (ENTER para aplicar, ESC para limpiar, swap_rows para volver)" % scalar_display
+				text_out = "Selecciona una fila y escribe un número. Valor: %s (ENTER para aplicar, ESC para limpiar, swap_rows para volver)" % scalar_display
 			else:
 				var n := int(variable_input.value)
 				var row_vals := _get_row_values(selected_row_for_scalar, n)
-				var formula_left := _format_scalar_formula(row_vals, scalar_display, n, false)
-				var equal_vals := _format_scalar_result(row_vals, scalar_display, false)
-				operation_text.text = "R%d * %s. Escribe número y ENTER para aplicar. ESC limpia, clic de nuevo para cancelar selección.\n%s\n= %s" % [
+				var r_color := _row_color(selected_row_for_scalar)
+				var formula_left := _format_scalar_formula(row_vals, scalar_display, n, false, r_color)
+				var equal_vals := _format_scalar_result(row_vals, scalar_display, false, r_color)
+				text_out = "R%d * %s. Escribe número y ENTER para aplicar. ESC limpia, clic de nuevo para cancelar selección.\n%s\n= %s" % [
 					selected_row_for_scalar + 1,
 					scalar_display,
 					formula_left,
 					equal_vals
 				]
+
 		InteractionMode.DIVIDE:
 			operation_label.text = "Modo: Dividir fila"
 			var scalar_display_div := scalar_input_buffer if scalar_input_buffer != "" else "_"
 			if selected_row_for_scalar == -1:
-				operation_text.text = "Selecciona una fila y escribe un número. Valor: %s (ENTER para aplicar, ESC para limpiar, swap_rows para volver)" % scalar_display_div
+				text_out = "Selecciona una fila y escribe un número. Valor: %s (ENTER para aplicar, ESC para limpiar, swap_rows para volver)" % scalar_display_div
 			else:
 				var n_div := int(variable_input.value)
 				var row_vals_div := _get_row_values(selected_row_for_scalar, n_div)
-				var formula_left_div := _format_scalar_formula(row_vals_div, scalar_display_div, n_div, true)
-				var equal_vals_div := _format_scalar_result(row_vals_div, scalar_display_div, true)
-				operation_text.text = "R%d / %s. Escribe número y ENTER para aplicar. ESC limpia, clic de nuevo para cancelar selección.\n%s\n= %s" % [
+				var r_color_div := _row_color(selected_row_for_scalar)
+				var formula_left_div := _format_scalar_formula(row_vals_div, scalar_display_div, n_div, true, r_color_div)
+				var equal_vals_div := _format_scalar_result(row_vals_div, scalar_display_div, true, r_color_div)
+				text_out = "R%d / %s. Escribe número y ENTER para aplicar. ESC limpia, clic de nuevo para cancelar selección.\n%s\n= %s" % [
 					selected_row_for_scalar + 1,
 					scalar_display_div,
 					formula_left_div,
 					equal_vals_div
 				]
+
 		InteractionMode.ADD:
 			operation_label.text = "Modo: Sumar filas"
 			if selected_row_for_add_source == -1:
-				operation_text.text = "Selecciona la fila origen (A). Luego elige la fila destino para aplicar Rdest = Rdest + Rorigen."
+				text_out = "Selecciona la fila origen (A). Luego elige la fila destino para aplicar Rdest = Rdest + Rorigen."
 			elif selected_row_for_add_target == -1:
 				var n_add := int(variable_input.value)
 				var src_vals_add := _get_row_values(selected_row_for_add_source, n_add)
+				var src_color_add := _row_color(selected_row_for_add_source)
 				var preview_target_add := selected_row_for_add_target
+				var tgt_color_add := Color.WHITE
 				if preview_target_add == -1 and hovered_row_for_add_target != -1 and hovered_row_for_add_target != selected_row_for_add_source:
 					preview_target_add = hovered_row_for_add_target
+					tgt_color_add = _row_color(preview_target_add)
 
 				if preview_target_add != -1 and preview_target_add != selected_row_for_add_source:
 					var tgt_vals_preview := _get_row_values(preview_target_add, n_add)
-					var formula_preview := _format_addsub_formula(tgt_vals_preview, src_vals_add, false, n_add)
-					operation_text.text = "Origen: R%d. Destino (hover): R%d. Se aplicaría Rdest = Rdest + Rorigen.\n%s\n= %s" % [
+					var formula_preview := _format_addsub_formula(
+						tgt_vals_preview,
+						src_vals_add,
+						false,
+						n_add,
+						src_color_add,
+						tgt_color_add
+					)
+					text_out = "Origen: R%d. Destino (hover): R%d. Se aplicaría Rdest = Rdest + Rorigen.\n%s\n= %s" % [
 						selected_row_for_add_source + 1,
 						preview_target_add + 1,
 						formula_preview[0],
 						formula_preview[1]
 					]
 				else:
-					operation_text.text = "Origen: R%d. Selecciona la fila destino para aplicar Rdest = Rdest + R%d." % [selected_row_for_add_source + 1, selected_row_for_add_source + 1]
+					text_out = "Origen: R%d. Selecciona la fila destino para aplicar Rdest = Rdest + R%d." % [selected_row_for_add_source + 1, selected_row_for_add_source + 1]
 			else:
 				var n_add2 := int(variable_input.value)
 				var tgt_vals_add := _get_row_values(selected_row_for_add_target, n_add2)
 				var src_vals_add2 := _get_row_values(selected_row_for_add_source, n_add2)
-				var formula_add2 := _format_addsub_formula(tgt_vals_add, src_vals_add2, false, n_add2)
-				operation_text.text = "Origen: R%d. Destino: R%d. Se aplicó Rdest = Rdest + Rorigen.\n%s\n= %s" % [
+				var formula_add2 := _format_addsub_formula(
+					tgt_vals_add,
+					src_vals_add2,
+					false,
+					n_add2,
+					_row_color(selected_row_for_add_source),
+					_row_color(selected_row_for_add_target)
+				)
+				text_out = "Origen: R%d. Destino: R%d. Se aplicó Rdest = Rdest + Rorigen.\n%s\n= %s" % [
 					selected_row_for_add_source + 1,
 					selected_row_for_add_target + 1,
 					formula_add2[0],
 					formula_add2[1]
 				]
+
 		InteractionMode.SUBTRACT:
 			operation_label.text = "Modo: Restar filas"
 			if selected_row_for_add_source == -1:
-				operation_text.text = "Selecciona la fila origen (A). Luego elige la fila destino para aplicar Rdest = Rdest - Rorigen."
+				text_out = "Selecciona la fila origen (A). Luego elige la fila destino para aplicar Rdest = Rdest - Rorigen."
 			elif selected_row_for_add_target == -1:
 				var n_sub_preview := int(variable_input.value)
 				var src_vals_prev := _get_row_values(selected_row_for_add_source, n_sub_preview)
+				var src_color_prev := _row_color(selected_row_for_add_source)
 				var preview_target_sub := selected_row_for_add_target
+				var tgt_color_prev := Color.WHITE
 				if preview_target_sub == -1 and hovered_row_for_add_target != -1 and hovered_row_for_add_target != selected_row_for_add_source:
 					preview_target_sub = hovered_row_for_add_target
+					tgt_color_prev = _row_color(preview_target_sub)
 
 				if preview_target_sub != -1 and preview_target_sub != selected_row_for_add_source:
 					var tgt_vals_prev := _get_row_values(preview_target_sub, n_sub_preview)
-					var formula_prev := _format_addsub_formula(tgt_vals_prev, src_vals_prev, true, n_sub_preview)
-					operation_text.text = "Origen: R%d. Destino (hover): R%d. Se aplicaría Rdest = Rdest - Rorigen.\n%s\n= %s" % [
+					var formula_prev := _format_addsub_formula(
+						tgt_vals_prev,
+						src_vals_prev,
+						true,
+						n_sub_preview,
+						src_color_prev,
+						tgt_color_prev
+					)
+					text_out = "Origen: R%d. Destino (hover): R%d. Se aplicaría Rdest = Rdest - Rorigen.\n%s\n= %s" % [
 						selected_row_for_add_source + 1,
 						preview_target_sub + 1,
 						formula_prev[0],
 						formula_prev[1]
 					]
 				else:
-					operation_text.text = "Origen: R%d. Selecciona la fila destino para aplicar Rdest = Rdest - R%d." % [selected_row_for_add_source + 1, selected_row_for_add_source + 1]
+					text_out = "Origen: R%d. Selecciona la fila destino para aplicar Rdest = Rdest - R%d." % [selected_row_for_add_source + 1, selected_row_for_add_source + 1]
 			else:
 				var n_sub := int(variable_input.value)
 				var tgt_vals := _get_row_values(selected_row_for_add_target, n_sub)
 				var src_vals_sub := _get_row_values(selected_row_for_add_source, n_sub)
-				var formula_sub := _format_addsub_formula(tgt_vals, src_vals_sub, true, n_sub)
-				operation_text.text = "Origen: R%d. Destino: R%d. Se aplicó Rdest = Rdest - Rorigen.\n%s\n= %s" % [
+				var formula_sub := _format_addsub_formula(
+					tgt_vals,
+					src_vals_sub,
+					true,
+					n_sub,
+					_row_color(selected_row_for_add_source),
+					_row_color(selected_row_for_add_target)
+				)
+				text_out = "Origen: R%d. Destino: R%d. Se aplicó Rdest = Rdest - Rorigen.\n%s\n= %s" % [
 					selected_row_for_add_source + 1,
 					selected_row_for_add_target + 1,
 					formula_sub[0],
 					formula_sub[1]
 				]
+
+	_set_operation_text(text_out)
+
+
+func _check_and_update_solved_rows() -> void:
+	var n := int(variable_input.value)
+	
+	for row_idx in range(n):
+		var row_vals := _get_row_values(row_idx, n)
+		
+		var solved_for_index := -1
+		
+		# Verificamos si esta fila coincide con el patrón de ALGUNA fila k (0..n-1)
+		for target_idx in range(n):
+			if _is_row_pattern_correct(row_vals, target_idx, n):
+				solved_for_index = target_idx
+				break
+		
+		var is_solved := (solved_for_index == row_idx)
+		var is_misplaced := (solved_for_index != -1 and not is_solved)
+		
+		# Aplicamos el estado a todos los tiles de esa fila
+		_set_row_visual_state(row_idx, is_solved, is_misplaced, n)
+
+
+func _is_row_pattern_correct(row_vals: Array, target_row_idx: int, n: int) -> bool:
+	for col in range(n):
+		var val: Fraction = row_vals[col]
+		if col == target_row_idx:
+			# Debe ser 1 (num == den)
+			if val.num != val.den or val.num == 0:
+				return false
+		else:
+			# Debe ser 0 (num == 0)
+			if val.num != 0:
+				return false
+	return true
+
+
+func _set_row_visual_state(row_index: int, is_solved: bool, is_misplaced: bool, n: int) -> void:
+	var logical_total := n + 1
+	var children := matrix_container.get_children()
+	
+	for logical_col in range(logical_total):
+		var idx := _child_index_for_row_col(row_index, logical_col, current_visual_columns, n)
+		if idx >= 0 and idx < children.size():
+			var tile = children[idx]
+			if tile.has_method("set_solved"):
+				tile.set_solved(is_solved)
+			if tile.has_method("set_misplaced"):
+				tile.set_misplaced(is_misplaced)
+
+
+func _set_operation_text(val: String) -> void:
+	if operation_text == null:
+		return
+	if operation_text is RichTextLabel:
+		var rtl := operation_text as RichTextLabel
+		rtl.text = val
+		rtl.visible_characters = -1
+		if rtl.get_line_count() > 0:
+			rtl.scroll_to_line(0)
+	else:
+		operation_text.text = val
 
 
 func _get_row_values(row_index: int, n: int) -> Array:
@@ -677,18 +1018,14 @@ func _get_row_values(row_index: int, n: int) -> Array:
 	for logical_col in range(logical_total):
 		var idx := _child_index_for_row_col(row_index, logical_col, current_visual_columns, n)
 		if idx < 0 or idx >= children.size():
-			values.append(0.0)
+			values.append(Fraction.new(0))
 			continue
 
 		var tile := children[idx]
-		var val := 0.0
+		var val := Fraction.new(0)
 		if tile.has_node("Label"):
 			var label: Label = tile.get_node("Label")
-			var text := label.text.strip_edges()
-			if text.is_valid_float():
-				val = float(text)
-			elif text.is_valid_int():
-				val = float(int(text))
+			val = Fraction.from_string(label.text)
 		values.append(val)
 
 	return values
@@ -703,55 +1040,76 @@ func _child_index_for_row_col(row_index: int, logical_col: int, visual_cols: int
 	return base + visual_cols - 1      # columna aumentada
 
 
-func _format_scalar_formula(row_vals: Array, scalar_display: String, n: int, is_divide: bool) -> String:
+func _row_color(row_index: int) -> Color:
+	if row_index >= 0 and row_index < row_colors.size():
+		return row_colors[row_index]
+	return Color.WHITE
+
+
+func _colorize(text: String, color: Color) -> String:
+	var hex := color.to_html(false)
+	return "[color=#%s]%s[/color]" % [hex, text]
+
+
+func _format_scalar_formula(row_vals: Array, scalar_display: String, n: int, is_divide: bool, row_color: Color) -> String:
 	var letters := "abcdefghijklmnopqrstuvwxyz"
 	var parts: Array = []
 	var symbol := "/%s" if is_divide else "%s"
 
 	for i in range(row_vals.size()):
+		var val_text := _colorize(row_vals[i].to_string(), row_color)
 		if i < n:
 			var letter := letters[i % letters.length()]
-			parts.append("%s(%s)%s" % [row_vals[i], symbol % scalar_display, letter])
+			parts.append("%s(%s)%s" % [val_text, symbol % scalar_display, letter])
 		else:
-			parts.append("%s(%s)" % [row_vals[i], symbol % scalar_display])
+			parts.append("%s(%s)" % [val_text, symbol % scalar_display])
 
 	return "  ".join(parts)
 
 
-func _format_scalar_result(row_vals: Array, scalar_display: String, is_divide: bool) -> String:
+func _format_scalar_result(row_vals: Array, scalar_display: String, is_divide: bool, row_color: Color) -> String:
 	if scalar_display == "_" or scalar_display == "-" or scalar_display == "":
 		return ""
 
-	if not scalar_display.is_valid_float():
+	# scalar_display puede ser "1/3"
+	var scalar := Fraction.from_string(scalar_display)
+	if scalar.num == 0 and is_divide:
 		return ""
 
-	var scalar := float(scalar_display)
 	var results: Array = []
 	for val in row_vals:
+		var res_val: Fraction
 		if is_divide:
-			results.append(str(val / scalar))
+			res_val = val.div(scalar)
 		else:
-			results.append(str(val * scalar))
+			res_val = val.mul(scalar)
+		results.append(_colorize(res_val.to_string(), row_color))
 	return "  ".join(results)
 
 
-func _format_addsub_formula(target_vals: Array, source_vals: Array, is_subtract: bool, n: int) -> Array:
+func _format_addsub_formula(target_vals: Array, source_vals: Array, is_subtract: bool, n: int, source_color: Color, target_color: Color) -> Array:
 	var symbol := "-" if is_subtract else "+"
 	var letters := "abcdefghijklmnopqrstuvwxyz"
 	var parts: Array = []
 	var results: Array = []
 
 	for i in range(target_vals.size()):
-		var tgt: float = float(target_vals[i])
-		var src: float = float(source_vals[i])
+		var tgt: Fraction = target_vals[i]
+		var src: Fraction = source_vals[i]
+		var tgt_text := _colorize(tgt.to_string(), target_color)
+		var src_text := _colorize(src.to_string(), source_color)
 		var letter := ""
 		if i < n:
 			letter = letters[i % letters.length()]
-			parts.append("%s %s %s%s" % [tgt, symbol, src, letter])
+			parts.append("%s %s %s%s" % [tgt_text, symbol, src_text, letter])
 		else:
-			parts.append("%s %s %s" % [tgt, symbol, src])
+			parts.append("%s %s %s" % [tgt_text, symbol, src_text])
 
-		var res: float = tgt - src if is_subtract else tgt + src
-		results.append(str(res))
+		var res: Fraction
+		if is_subtract:
+			res = tgt.sub(src)
+		else:
+			res = tgt.add(src)
+		results.append(_colorize(res.to_string(), target_color))
 
 	return [ "  ".join(parts), "  ".join(results) ]
