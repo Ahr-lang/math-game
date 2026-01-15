@@ -1,0 +1,8 @@
+[gd_resource type="Theme" load_steps=3 format=3 uid="uid://b6rufeh0kvua5"]
+
+[ext_resource type="StyleBox" uid="uid://ce4l6iaggeb7g" path="res://scenes/normalNotPressed.tres" id="1_4rvu2"]
+[ext_resource type="FontFile" uid="uid://dg2xsrcyovcls" path="res://fonts/Square.ttf" id="2_t6gb1"]
+
+[resource]
+default_font = ExtResource("2_t6gb1")
+/styles/aaa = ExtResource("1_4rvu2")

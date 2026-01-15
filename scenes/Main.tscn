@@ -1,8 +1,20 @@
-[gd_scene load_steps=4 format=3 uid="uid://7x65pygempws"]
+[gd_scene load_steps=7 format=3 uid="uid://7x65pygempws"]
 
 [ext_resource type="Script" uid="uid://cosk31s7fsovi" path="res://scripts/main.gd" id="1_fvwan"]
 [ext_resource type="Script" uid="uid://cmu6dkrtw81e5" path="res://scripts/separator.gd" id="2_rvslj"]
 [ext_resource type="FontFile" uid="uid://dg2xsrcyovcls" path="res://fonts/Square.ttf" id="3_0bbpv"]
+
+[sub_resource type="Theme" id="Theme_0bbpv"]
+default_font = ExtResource("3_0bbpv")
+Button/fonts/font = ExtResource("3_0bbpv")
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_rarhs"]
+border_width_left = 6
+border_color = Color(8.663535e-07, 0.95687276, 0.44805825, 1)
+corner_detail = 20
+
+[sub_resource type="Theme" id="Theme_vcsgt"]
+/styles/aaa = SubResource("StyleBoxFlat_rarhs")
 
 [node name="Main" type="Control"]
 layout_mode = 3
@@ -65,6 +77,32 @@ size_flags_horizontal = 3
 
 [node name="OperationLabel" type="Label" parent="MainPanel/SidePanel"]
 layout_mode = 2
+theme_override_fonts/font = ExtResource("3_0bbpv")
+
+[node name="ModeBar" type="HBoxContainer" parent="MainPanel/SidePanel"]
+layout_mode = 2
+theme_override_constants/separation = 40
+alignment = 1
+
+[node name="Add" type="Button" parent="MainPanel/SidePanel/ModeBar"]
+layout_mode = 2
+text = "+"
+
+[node name="Subtract" type="Button" parent="MainPanel/SidePanel/ModeBar"]
+layout_mode = 2
+text = "-"
+
+[node name="Multiply" type="Button" parent="MainPanel/SidePanel/ModeBar"]
+layout_mode = 2
+text = "x"
+
+[node name="Divide" type="Button" parent="MainPanel/SidePanel/ModeBar"]
+layout_mode = 2
+text = "÷"
+
+[node name="Switch" type="Button" parent="MainPanel/SidePanel/ModeBar"]
+layout_mode = 2
+text = "⇄ "
 
 [node name="OperationText" type="RichTextLabel" parent="MainPanel/SidePanel"]
 layout_mode = 2
@@ -77,10 +115,14 @@ bbcode_enabled = true
 
 [node name="Number of variables" type="SpinBox" parent="MainPanel/SidePanel"]
 layout_mode = 2
+theme = SubResource("Theme_0bbpv")
 value = 3.0
+rounded = true
+alignment = 1
 
 [node name="ReshuffleButton" type="Button" parent="MainPanel/SidePanel"]
 layout_mode = 2
+theme = SubResource("Theme_vcsgt")
 
 [node name="BackButton" type="Button" parent="MainPanel/SidePanel"]
 layout_mode = 2

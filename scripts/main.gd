@@ -9,6 +9,11 @@ extends Control
 @onready var reshuffle_button = $MainPanel/SidePanel/ReshuffleButton
 @onready var operation_label  = $MainPanel/SidePanel/OperationLabel
 @onready var operation_text   = $MainPanel/SidePanel/OperationText
+@onready var mode_add_button = $MainPanel/SidePanel/ModeBar/Add
+@onready var mode_subtract_button = $MainPanel/SidePanel/ModeBar/Subtract
+@onready var mode_multiply_button = $MainPanel/SidePanel/ModeBar/Multiply
+@onready var mode_divide_button = $MainPanel/SidePanel/ModeBar/Divide
+@onready var mode_switch_button = $MainPanel/SidePanel/ModeBar/Switch
 
 # GridContainer donde colocamos todos los tiles (Rk, coeficientes, espaciador, aumentada)
 @onready var matrix_container = $MainPanel/MatrixArea/MatrixRoot/MatrixContainer
@@ -28,6 +33,11 @@ var RowScalarScript         = preload("res://scripts/RowScalar.gd")
 var RowDividerScript        = preload("res://scripts/RowDivider.gd")
 var RowAdderScript          = preload("res://scripts/RowAdder.gd")
 var RowSubtractorScript     = preload("res://scripts/RowSubtractor.gd")
+var HistoryPreviewScript    = preload("res://scripts/HistoryPreview.gd")
+# MatrixGrid y GameState son clases globales (class_name), no necesitan preload si Godot las detecta,
+# pero por seguridad o si no se han refrescado:
+# var MatrixGridScript = preload("res://scripts/MatrixGrid.gd") 
+# var GameStateScript = preload("res://scripts/GameState.gd")
 
 # Generador de sistemas Ax = b con solución garantizada
 
@@ -36,8 +46,8 @@ var RowSubtractorScript     = preload("res://scripts/RowSubtractor.gd")
 
 # --------- Datos de estado ---------
 
-# Array para guardar los colores de cada fila (arcoíris)
-var row_colors: Array = []
+var game_state: GameState
+var matrix_grid: MatrixGrid
 
 # Seguimiento del modo de interacción y la selección de intercambio
 enum InteractionMode { SWITCH, MULTIPLY, DIVIDE, ADD, SUBTRACT }
@@ -49,10 +59,11 @@ var selected_row_for_add_target: int = -1
 var hovered_row_for_add_target: int = -1
 var scalar_input_buffer: String = ""
 var current_visual_columns: int = 0
+var _separator_update_frames: int = 0
+var _mode_button_group: ButtonGroup
 
 # Historial de estados para Undo y Preview
-# Cada elemento es un Dictionary: { "desc": String, "before": Dictionary, "after": Dictionary }
-var history_log: Array = []
+var history_preview_node: PopupPanel
 
 # Ancho extra del hueco entre la última columna normal y la aumentada
 # Este espacio es donde va a vivir la línea blanca
@@ -62,6 +73,15 @@ const EXTRA_COLUMN_GAP: float = 40.0
 func _ready():
 	# Semilla random para que los números sean diferentes cada vez
 	randomize()
+	
+	# Inicializar helpers
+	game_state = GameState.new()
+	matrix_grid = MatrixGrid.new(matrix_container, separator, tile_scene, EXTRA_COLUMN_GAP)
+	
+	# Conectar callbacks del grid
+	matrix_grid.on_tile_input = Callable(self, "_on_cell_gui_input")
+	matrix_grid.on_tile_mouse_enter = Callable(self, "_on_cell_mouse_entered")
+	matrix_grid.on_tile_mouse_exit = Callable(self, "_on_cell_mouse_exited")
 
 	# Valor inicial del SpinBox (por ejemplo 3 variables)
 	variable_input.value = 3
@@ -80,15 +100,22 @@ func _ready():
 	if back_button:
 		back_button.pressed.connect(_on_back_pressed)
 		back_button.text = "Deshacer"
+	_setup_mode_buttons()
+	_sync_mode_buttons()
 
 	# Cada vez que el GridContainer cambie de tamaño, actualizamos la posición del separador
 	matrix_container.resized.connect(_schedule_separator_update)
+	get_viewport().size_changed.connect(_schedule_separator_update)
 
 	# Hacemos que el Separator use las anclas completas (pero lo movemos vía position/size)
 	separator.anchor_left = 0.0
 	separator.anchor_right = 0.0
 	separator.anchor_top = 0.0
 	separator.anchor_bottom = 0.0
+	
+	# Instanciar el preview de historial
+	history_preview_node = HistoryPreviewScript.new()
+	add_child(history_preview_node)
 
 	# Creamos la matriz al inicio
 	_create_matrix()
@@ -105,113 +132,26 @@ func _create_matrix():
 	# n = número de variables (y también número de filas/columnas principales)
 	var n = int(variable_input.value)
 
-	# Total de columnas "lógicas": las de la matriz (coeficientes) + 1 aumentada
-	var logical_total_columns = n + 1
-
-	# Total de columnas "visuales" que ve el GridContainer:
-	#   1 (columna Rk) +
-	#   n (coeficientes normales) +
-	#   1 (espaciador invisible) +
-	#   1 (aumentada)
-	# = n + 3
-	var visual_total_columns  = n + 3
-	current_visual_columns = visual_total_columns
-	matrix_container.columns = visual_total_columns
-
 	# --- NUEVO: generamos la matriz aumentada [A|b] con solución garantizada ---
-	# augmented_matrix[row][0..n-1] = coeficientes A
-	# augmented_matrix[row][n]      = término independiente b
 	var augmented_matrix: Array = MatrixGeneratorScript.generate_augmented(n, -5, 5)
 
-	# Limpiamos cualquier cosa que estuviera antes en el GridContainer
-	row_colors.clear()
+	# Limpiamos estado
+	game_state.clear()
 	_reset_swap_selection()
 	_clear_history()
-	history_log.clear()
 	
-	for child in matrix_container.get_children():
-		child.queue_free()
-
 	# Preparamos los colores de las filas:
-	# Creamos n tonos de matiz de 0 a 1 distribuidos, luego los mezclamos (shuffle)
 	var hues: Array = []
 	for i in range(n):
-		hues.append(float(i) / n)  # hue = 0, 1/n, 2/n, ... (arcoíris)
+		hues.append(float(i) / n)
 	hues.shuffle()
 
-	# Convertimos cada hue en un Color RGB saturado y brillante
 	for hue in hues:
 		var rainbow_color := Color.from_hsv(hue, 1.0, 1.0)
-		row_colors.append(rainbow_color)
+		game_state.row_colors.append(rainbow_color)
 
-	# ---------------------------------------------------------
-	# Construcción de la matriz fila por fila
-	# ---------------------------------------------------------
-	for row in range(n):
-		var row_color = row_colors[row]   # color asignado a esta fila
-		var is_last_row = (row == n - 1)  # true si es la última fila
-
-		# Valores de la fila: [ a_0, a_1, ..., a_{n-1}, b ]
-		var row_vals: Array = augmented_matrix[row]
-
-		# -----------------------------------------------------
-		# 1) PRIMERA COLUMNA: etiqueta de fila "R1", "R2", ...
-		# -----------------------------------------------------
-		var row_label = tile_scene.instantiate()
-		_attach_row_click_handler(row_label)
-		matrix_container.add_child(row_label)
-
-		# Usamos el método especial de MatrixTile para headers de fila
-		if row_label.has_method("set_row_header"):
-			# row + 1 porque row empieza en 0 (R1, R2, R3, ...)
-			row_label.set_row_header(row + 1)
-
-		# -----------------------------------------------------
-		# 2) COLUMNAS NORMALES: coeficientes de la matriz A
-		#    índices lógicos de columna: 0..(n-1)
-		# -----------------------------------------------------
-		for col in range(n):
-			var tile = tile_scene.instantiate()
-			_attach_row_click_handler(tile)
-			matrix_container.add_child(tile)
-
-			# Usamos el valor generado en la matriz A
-			tile.set_value(
-				row_vals[col],          # valor a_ij
-				row_color,              # color de la fila
-				is_last_row,            # si es la última fila
-				col,                    # índice lógico de columna (0..n-1)
-				logical_total_columns   # total lógico (n+1)
-			)
-
-		# -----------------------------------------------------
-		# 3) COLUMNA ESPACIADORA (INVISIBLE)
-		#    Solo sirve para crear un hueco más grande
-		#    entre la última normal y la aumentada
-		# -----------------------------------------------------
-		var spacer := Control.new()      # Control vacío, sin escenas ni nada
-		# Permitimos que los clics atraviesen el hueco
-		spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		# Le damos un ancho mínimo para que fuerce el espacio
-		spacer.custom_minimum_size = Vector2(EXTRA_COLUMN_GAP, 0.0)
-		# Lo agregamos como una columna más
-		matrix_container.add_child(spacer)
-
-		# -----------------------------------------------------
-		# 4) COLUMNA AUMENTADA (última columna lógica)
-		#    índice lógico = n
-		# -----------------------------------------------------
-		var aug_tile = tile_scene.instantiate()
-		_attach_row_click_handler(aug_tile)
-		matrix_container.add_child(aug_tile)
-
-		aug_tile.set_value(
-			row_vals[n],              # término independiente b_i
-			row_color,                # mismo color de la fila
-			is_last_row,              # si es la última fila
-			n,                        # índice lógico de la columna aumentada
-			logical_total_columns     # total lógico de columnas (n+1)
-		)
+	# Construcción de la matriz usando el helper
+	current_visual_columns = matrix_grid.setup_grid(n, augmented_matrix, game_state.row_colors)
 
 	# Después de construir todo, programamos actualización del separador
 	_schedule_separator_update()
@@ -221,78 +161,20 @@ func _create_matrix():
 # En vez de llamar directamente a _update_separator_position, usamos call_deferred
 # para asegurarnos de que el layout ya se haya calculado.
 func _schedule_separator_update() -> void:
-	call_deferred("_update_separator_position")
+	_separator_update_frames = max(_separator_update_frames, 2)
+	set_process(true)
 
 
 func _update_separator_position() -> void:
-	# Si todavía no hay hijos en el GridContainer, no hacemos nada
-	if matrix_container.get_child_count() == 0:
+	matrix_grid.update_layout()
+
+
+func _process(_delta: float) -> void:
+	if _separator_update_frames <= 0:
+		set_process(false)
 		return
-
-	# Esperamos un frame de proceso para que Godot termine de acomodar el GridContainer
-	await get_tree().process_frame
-
-	# Recordatorio de la estructura visual de columnas en el GridContainer:
-	#   col 0        -> Rk (etiqueta de fila)
-	#   col 1..n     -> columnas normales (coeficientes)
-	#   col n+1      -> espaciador (invisible)
-	#   col n+2      -> columna aumentada
-	#   columns = n + 3
-
-	# Índice de la última columna visual (aumentada)
-	var last_col_index: int = matrix_container.columns - 1      # n+2
-
-	# Índice de la última columna NORMAL (antes del espaciador) = n
-	# (saltamos el espaciador restando 2)
-	var prev_col_index: int = last_col_index - 2                # n
-	if prev_col_index < 0:
-		return
-
-	# Obtenemos la referencia al Control de la última normal (primera fila)
-	var prev_tile: Control = matrix_container.get_child(prev_col_index)
-
-	# Y el Control de la columna aumentada (primera fila)
-	var last_tile: Control = matrix_container.get_child(last_col_index)
-
-	# Posición global del padre del separador (para convertir de global a local)
-	var parent_global: Vector2 = separator.get_parent().global_position
-
-	# Posición vertical de la matriz (para alinear el separador en Y)
-	var matrix_global_y: float = matrix_container.global_position.y
-
-	# ---------------------------------------------------------
-	# Calculamos el hueco entre la última normal y la aumentada
-	# ---------------------------------------------------------
-
-	# Borde derecho de la última columna normal
-	var prev_right: float = prev_tile.global_position.x + prev_tile.size.x
-
-	# Borde izquierdo de la columna aumentada
-	var last_left: float = last_tile.global_position.x
-
-	# Punto medio entre esos dos bordes → x donde va centrada la línea
-	var mid_x: float = (prev_right + last_left) * 0.5
-
-	# Ancho de la línea (usamos el mínimo definido o 4 px)
-	var line_width: float = max(separator.custom_minimum_size.x, 4.0)
-
-	# Ajustamos el tamaño del separador:
-	#   - ancho = line_width
-	#   - alto = altura del GridContainer (para cubrir toda la matriz)
-	separator.size = Vector2(line_width, matrix_container.size.y)
-
-	# Posicionamos el separador en coordenadas locales del padre:
-	#   - X: centrado en mid_x
-	#   - Y: alineado con el inicio de la matriz
-	separator.position = Vector2(
-		mid_x - parent_global.x - line_width * 0.5,
-		matrix_global_y - parent_global.y
-	)
-
-	# Si el Separator tiene un método set_line (por ejemplo, si es un Line2D custom),
-	# lo actualizamos para dibujar la línea de arriba a abajo.
-	if separator.has_method("set_line"):
-		separator.set_line(line_width * 0.5, 0.0, separator.size.y)
+	_separator_update_frames -= 1
+	_update_separator_position()
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("swap_rows"):
 		# Entramos en modo intercambio y limpiamos selección previa
@@ -417,9 +299,9 @@ func _handle_row_swap_click(row_index: int) -> void:
 	RowOperationsScript.swap_rows(matrix_container, n, from_row, to_row)
 
 	# Actualizamos también el array de colores para que coincida con el cambio visual
-	var tmp_color = row_colors[from_row]
-	row_colors[from_row] = row_colors[to_row]
-	row_colors[to_row] = tmp_color
+	var tmp_color = game_state.row_colors[from_row]
+	game_state.row_colors[from_row] = game_state.row_colors[to_row]
+	game_state.row_colors[to_row] = tmp_color
 	
 	var state_after = _capture_state()
 
@@ -470,11 +352,11 @@ func _handle_row_add_click(row_index: int) -> void:
 		var state_before = _capture_state()
 		
 		if interaction_mode == InteractionMode.SUBTRACT:
-			RowSubtractorScript.subtract_rows(matrix_container, n, selected_row_for_add_source, selected_row_for_add_target, row_colors)
+			RowSubtractorScript.subtract_rows(matrix_container, n, selected_row_for_add_source, selected_row_for_add_target, game_state.row_colors)
 			var state_after = _capture_state()
 			_add_history_entry("R%d = R%d - R%d" % [selected_row_for_add_target + 1, selected_row_for_add_target + 1, selected_row_for_add_source + 1], state_before, state_after)
 		else:
-			RowAdderScript.add_rows(matrix_container, n, selected_row_for_add_source, selected_row_for_add_target, row_colors)
+			RowAdderScript.add_rows(matrix_container, n, selected_row_for_add_source, selected_row_for_add_target, game_state.row_colors)
 			var state_after = _capture_state()
 			_add_history_entry("R%d = R%d + R%d" % [selected_row_for_add_target + 1, selected_row_for_add_target + 1, selected_row_for_add_source + 1], state_before, state_after)
 
@@ -489,20 +371,10 @@ func _handle_row_add_click(row_index: int) -> void:
 
 
 func _highlight_row(row_index: int, highlight: bool) -> void:
-	if current_visual_columns <= 0:
-		return
+	matrix_grid.highlight_row(row_index, highlight, current_visual_columns)
 
-	var start := row_index * current_visual_columns
-	var end := start + current_visual_columns
-	var children := matrix_container.get_children()
-	if end > children.size():
-		return
-
-	var color := Color(1.2, 1.2, 1.2, 1.0) if highlight else Color(1, 1, 1, 1)
-	for i in range(start, end):
-		var node = children[i]
-		if node is CanvasItem:
-			node.modulate = color
+func _clear_row_highlights() -> void:
+	matrix_grid.clear_highlights()
 
 
 func _reset_swap_selection() -> void:
@@ -515,13 +387,6 @@ func _reset_swap_selection() -> void:
 	_clear_row_highlights()
 	_refresh_operation_ui()
 
-
-func _clear_row_highlights() -> void:
-	for child in matrix_container.get_children():
-		if child is CanvasItem:
-			child.modulate = Color(1, 1, 1, 1)
-
-
 func _clear_history() -> void:
 	if history_panel == null:
 		return
@@ -529,6 +394,8 @@ func _clear_history() -> void:
 	for child in history_panel.get_children():
 		history_panel.remove_child(child)
 		child.queue_free()
+	
+	game_state.clear()
 
 
 func _add_history_entry(text: String, state_before: Dictionary, state_after: Dictionary) -> void:
@@ -536,14 +403,10 @@ func _add_history_entry(text: String, state_before: Dictionary, state_after: Dic
 		return
 
 	# Guardamos en el log lógico
-	history_log.append({
-		"desc": text,
-		"before": state_before,
-		"after": state_after
-	})
+	game_state.add_history_entry(text, state_before, state_after)
 
 	# Creamos el elemento visual
-	var entry_idx := history_log.size() - 1
+	var entry_idx := game_state.history_size() - 1
 	
 	# Usamos un Button plano para poder detectar hover
 	var btn := Button.new()
@@ -560,25 +423,15 @@ func _add_history_entry(text: String, state_before: Dictionary, state_after: Dic
 
 func _capture_state() -> Dictionary:
 	var n := int(variable_input.value)
-	var rows_data: Array = []
-	for r in range(n):
-		# _get_row_values devuelve Array[Fraction]
-		rows_data.append(_get_row_values(r, n))
-	
-	return {
-		"n": n,
-		"rows": rows_data,
-		"colors": row_colors.duplicate()
-	}
+	return game_state.capture_state(n, matrix_grid, current_visual_columns)
 
 
 func _restore_state(state: Dictionary) -> void:
 	var n: int = state["n"]
-	# Asumimos que n no cambia en medio de la partida, pero por seguridad:
 	if n != int(variable_input.value):
-		return # O manejar cambio de tamaño
+		return
 		
-	row_colors = state["colors"].duplicate()
+	game_state.row_colors = state["colors"].duplicate()
 	var rows_data: Array = state["rows"]
 	
 	# Restauramos valores en los tiles
@@ -591,7 +444,7 @@ func _restore_state(state: Dictionary) -> void:
 		var is_last_row := (r == n - 1)
 		
 		for col in range(logical_total):
-			var idx := _child_index_for_row_col(r, col, current_visual_columns, n)
+			var idx := matrix_grid.child_index_for_row_col(r, col, current_visual_columns, n)
 			if idx >= 0 and idx < children.size():
 				var tile = children[idx]
 				var val: Fraction = row_vals[col]
@@ -605,10 +458,10 @@ func _restore_state(state: Dictionary) -> void:
 
 
 func _on_back_pressed() -> void:
-	if history_log.is_empty():
+	var last_entry = game_state.pop_history()
+	if last_entry.is_empty():
 		return
-		
-	var last_entry = history_log.pop_back()
+	
 	# Restauramos el estado "before" de esa acción
 	_restore_state(last_entry["before"])
 	
@@ -623,107 +476,18 @@ func _on_back_pressed() -> void:
 
 
 # --- Preview Window Logic ---
-var _preview_popup: PopupPanel
-var _preview_container: HBoxContainer
-var _preview_before_grid: GridContainer
-var _preview_after_grid: GridContainer
 
 func _on_history_entry_hover(idx: int, btn: Control) -> void:
-	if idx < 0 or idx >= history_log.size():
+	var entry = game_state.get_history_entry(idx)
+	if entry.is_empty():
 		return
 		
-	var entry = history_log[idx]
-	_show_preview(entry["before"], entry["after"], btn)
+	if history_preview_node:
+		history_preview_node.show_preview(entry["before"], entry["after"], btn)
 
 func _on_history_entry_exit() -> void:
-	if _preview_popup:
-		_preview_popup.hide()
-
-func _show_preview(state_before: Dictionary, state_after: Dictionary, anchor_node: Control) -> void:
-	if _preview_popup == null:
-		_create_preview_window()
-	
-	_populate_preview_grid(_preview_before_grid, state_before, "Antes")
-	_populate_preview_grid(_preview_after_grid, state_after, "Después")
-	
-	# Posicionar cerca del botón
-	var global_rect = anchor_node.get_global_rect()
-	var pos = global_rect.position
-	pos.x += global_rect.size.x + 10 # A la derecha del historial
-	
-	_preview_popup.position = Vector2i(pos)
-	_preview_popup.popup()
-
-func _create_preview_window() -> void:
-	_preview_popup = PopupPanel.new()
-	# Configurar estilo si es necesario
-	# En Godot 4, PopupPanel es un Window y no tiene mouse_filter
-	
-	_preview_container = HBoxContainer.new()
-	_preview_container.add_theme_constant_override("separation", 20)
-	_preview_popup.add_child(_preview_container)
-	
-	var vbox1 = VBoxContainer.new()
-	var lbl1 = Label.new()
-	lbl1.text = "ANTES"
-	lbl1.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox1.add_child(lbl1)
-	_preview_before_grid = GridContainer.new()
-	vbox1.add_child(_preview_before_grid)
-	_preview_container.add_child(vbox1)
-	
-	var vbox2 = VBoxContainer.new()
-	var lbl2 = Label.new()
-	lbl2.text = "DESPUÉS"
-	lbl2.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox2.add_child(lbl2)
-	_preview_after_grid = GridContainer.new()
-	vbox2.add_child(_preview_after_grid)
-	_preview_container.add_child(vbox2)
-	
-	add_child(_preview_popup)
-
-func _populate_preview_grid(grid: GridContainer, state: Dictionary, _title: String) -> void:
-	# Limpiar grid
-	for c in grid.get_children():
-		grid.remove_child(c)
-		c.queue_free()
-		
-	var n: int = state["n"]
-	var rows_data: Array = state["rows"]
-	var colors: Array = state["colors"]
-	
-	# Configurar columnas: n coeficientes + 1 separador + 1 aumentada
-	grid.columns = n + 2
-	
-	for r in range(n):
-		var row_vals: Array = rows_data[r]
-		var color: Color = colors[r]
-		
-		for c in range(n + 1):
-			# Antes de la última columna (la aumentada), insertamos el separador
-			if c == n:
-				var sep = ColorRect.new()
-				sep.custom_minimum_size = Vector2(2, 40)
-				sep.color = Color.WHITE
-				grid.add_child(sep)
-
-			var val: Fraction = row_vals[c]
-			var lbl = Label.new()
-			lbl.text = val.to_string()
-			lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-			lbl.custom_minimum_size = Vector2(40, 40) # Tamaño fijo pequeño
-			
-			# Fondo de color
-			var style = StyleBoxFlat.new()
-			style.bg_color = Color(0.1, 0.1, 0.1)
-			style.border_color = color
-			style.set_border_width_all(2)
-			lbl.add_theme_stylebox_override("normal", style)
-			lbl.add_theme_color_override("font_color", color)
-			
-			grid.add_child(lbl)
+	if history_preview_node:
+		history_preview_node.hide()
 
 
 func _set_interaction_mode(mode: int) -> void:
@@ -737,7 +501,59 @@ func _set_interaction_mode(mode: int) -> void:
 
 	interaction_mode = mode as InteractionMode
 	_reset_swap_selection()
+	_sync_mode_buttons()
 
+
+func _setup_mode_buttons() -> void:
+	_mode_button_group = ButtonGroup.new()
+
+	if mode_switch_button:
+		mode_switch_button.toggle_mode = true
+		mode_switch_button.button_group = _mode_button_group
+		mode_switch_button.pressed.connect(_on_mode_switch_pressed)
+	if mode_multiply_button:
+		mode_multiply_button.toggle_mode = true
+		mode_multiply_button.button_group = _mode_button_group
+		mode_multiply_button.pressed.connect(_on_mode_multiply_pressed)
+	if mode_divide_button:
+		mode_divide_button.toggle_mode = true
+		mode_divide_button.button_group = _mode_button_group
+		mode_divide_button.pressed.connect(_on_mode_divide_pressed)
+	if mode_add_button:
+		mode_add_button.toggle_mode = true
+		mode_add_button.button_group = _mode_button_group
+		mode_add_button.pressed.connect(_on_mode_add_pressed)
+	if mode_subtract_button:
+		mode_subtract_button.toggle_mode = true
+		mode_subtract_button.button_group = _mode_button_group
+		mode_subtract_button.pressed.connect(_on_mode_subtract_pressed)
+
+func _sync_mode_buttons() -> void:
+	if mode_switch_button:
+		mode_switch_button.button_pressed = interaction_mode == InteractionMode.SWITCH
+	if mode_multiply_button:
+		mode_multiply_button.button_pressed = interaction_mode == InteractionMode.MULTIPLY
+	if mode_divide_button:
+		mode_divide_button.button_pressed = interaction_mode == InteractionMode.DIVIDE
+	if mode_add_button:
+		mode_add_button.button_pressed = interaction_mode == InteractionMode.ADD
+	if mode_subtract_button:
+		mode_subtract_button.button_pressed = interaction_mode == InteractionMode.SUBTRACT
+
+func _on_mode_switch_pressed() -> void:
+	_set_interaction_mode(InteractionMode.SWITCH)
+
+func _on_mode_multiply_pressed() -> void:
+	_set_interaction_mode(InteractionMode.MULTIPLY)
+
+func _on_mode_divide_pressed() -> void:
+	_set_interaction_mode(InteractionMode.DIVIDE)
+
+func _on_mode_add_pressed() -> void:
+	_set_interaction_mode(InteractionMode.ADD)
+
+func _on_mode_subtract_pressed() -> void:
+	_set_interaction_mode(InteractionMode.SUBTRACT)
 
 func _handle_scalar_key_input(event: InputEventKey) -> void:
 	match event.keycode:
@@ -785,11 +601,11 @@ func _apply_scalar_multiplier() -> void:
 	if interaction_mode == InteractionMode.DIVIDE:
 		if val.num == 0:
 			return
-		RowDividerScript.divide_row(matrix_container, n, selected_row_for_scalar, val, row_colors)
+		RowDividerScript.divide_row(matrix_container, n, selected_row_for_scalar, val, game_state.row_colors)
 		var state_after = _capture_state()
 		_add_history_entry("R%d / %s" % [selected_row_for_scalar + 1, scalar_input_buffer], state_before, state_after)
 	else:
-		RowScalarScript.multiply_row(matrix_container, n, selected_row_for_scalar, val, row_colors)
+		RowScalarScript.multiply_row(matrix_container, n, selected_row_for_scalar, val, game_state.row_colors)
 		var state_after = _capture_state()
 		_add_history_entry("R%d * %s" % [selected_row_for_scalar + 1, scalar_input_buffer], state_before, state_after)
 
@@ -821,8 +637,8 @@ func _refresh_operation_ui() -> void:
 				var n := int(variable_input.value)
 				var row_vals := _get_row_values(selected_row_for_scalar, n)
 				var r_color := _row_color(selected_row_for_scalar)
-				var formula_left := _format_scalar_formula(row_vals, scalar_display, n, false, r_color)
-				var equal_vals := _format_scalar_result(row_vals, scalar_display, false, r_color)
+				var formula_left := FormulaFormatter.format_scalar_formula(row_vals, scalar_display, n, false, r_color)
+				var equal_vals := FormulaFormatter.format_scalar_result(row_vals, scalar_display, false, r_color)
 				text_out = "R%d * %s. Escribe número y ENTER para aplicar. ESC limpia, clic de nuevo para cancelar selección.\n%s\n= %s" % [
 					selected_row_for_scalar + 1,
 					scalar_display,
@@ -839,8 +655,8 @@ func _refresh_operation_ui() -> void:
 				var n_div := int(variable_input.value)
 				var row_vals_div := _get_row_values(selected_row_for_scalar, n_div)
 				var r_color_div := _row_color(selected_row_for_scalar)
-				var formula_left_div := _format_scalar_formula(row_vals_div, scalar_display_div, n_div, true, r_color_div)
-				var equal_vals_div := _format_scalar_result(row_vals_div, scalar_display_div, true, r_color_div)
+				var formula_left_div := FormulaFormatter.format_scalar_formula(row_vals_div, scalar_display_div, n_div, true, r_color_div)
+				var equal_vals_div := FormulaFormatter.format_scalar_result(row_vals_div, scalar_display_div, true, r_color_div)
 				text_out = "R%d / %s. Escribe número y ENTER para aplicar. ESC limpia, clic de nuevo para cancelar selección.\n%s\n= %s" % [
 					selected_row_for_scalar + 1,
 					scalar_display_div,
@@ -864,7 +680,7 @@ func _refresh_operation_ui() -> void:
 
 				if preview_target_add != -1 and preview_target_add != selected_row_for_add_source:
 					var tgt_vals_preview := _get_row_values(preview_target_add, n_add)
-					var formula_preview := _format_addsub_formula(
+					var formula_preview := FormulaFormatter.format_addsub_formula(
 						tgt_vals_preview,
 						src_vals_add,
 						false,
@@ -872,19 +688,22 @@ func _refresh_operation_ui() -> void:
 						src_color_add,
 						tgt_color_add
 					)
-					text_out = "Origen: R%d. Destino (hover): R%d. Se aplicaría Rdest = Rdest + Rorigen.\n%s\n= %s" % [
+					text_out = "Origen: R%d. Destino: R%d. Se aplicaria [b]R%d[/b] = R%d + R%d.\n%s\n= %s" % [
 						selected_row_for_add_source + 1,
 						preview_target_add + 1,
+						preview_target_add + 1,
+						preview_target_add + 1,
+						selected_row_for_add_source + 1,
 						formula_preview[0],
 						formula_preview[1]
 					]
 				else:
-					text_out = "Origen: R%d. Selecciona la fila destino para aplicar Rdest = Rdest + R%d." % [selected_row_for_add_source + 1, selected_row_for_add_source + 1]
+					text_out = "Origen: R%d. Selecciona la fila destino para aplicar [b]Rdest[/b] = Rdest + R%d." % [selected_row_for_add_source + 1, selected_row_for_add_source + 1]
 			else:
 				var n_add2 := int(variable_input.value)
 				var tgt_vals_add := _get_row_values(selected_row_for_add_target, n_add2)
 				var src_vals_add2 := _get_row_values(selected_row_for_add_source, n_add2)
-				var formula_add2 := _format_addsub_formula(
+				var formula_add2 := FormulaFormatter.format_addsub_formula(
 					tgt_vals_add,
 					src_vals_add2,
 					false,
@@ -892,9 +711,12 @@ func _refresh_operation_ui() -> void:
 					_row_color(selected_row_for_add_source),
 					_row_color(selected_row_for_add_target)
 				)
-				text_out = "Origen: R%d. Destino: R%d. Se aplicó Rdest = Rdest + Rorigen.\n%s\n= %s" % [
+				text_out = "Origen: R%d. Destino: R%d. Se aplico [b]R%d[/b] = R%d + R%d.\n%s\n= %s" % [
 					selected_row_for_add_source + 1,
 					selected_row_for_add_target + 1,
+					selected_row_for_add_target + 1,
+					selected_row_for_add_target + 1,
+					selected_row_for_add_source + 1,
 					formula_add2[0],
 					formula_add2[1]
 				]
@@ -915,7 +737,7 @@ func _refresh_operation_ui() -> void:
 
 				if preview_target_sub != -1 and preview_target_sub != selected_row_for_add_source:
 					var tgt_vals_prev := _get_row_values(preview_target_sub, n_sub_preview)
-					var formula_prev := _format_addsub_formula(
+					var formula_prev := FormulaFormatter.format_addsub_formula(
 						tgt_vals_prev,
 						src_vals_prev,
 						true,
@@ -923,19 +745,22 @@ func _refresh_operation_ui() -> void:
 						src_color_prev,
 						tgt_color_prev
 					)
-					text_out = "Origen: R%d. Destino (hover): R%d. Se aplicaría Rdest = Rdest - Rorigen.\n%s\n= %s" % [
+					text_out = "Origen: R%d. Destino: R%d. Se aplicaria [b]R%d[/b] = R%d - R%d.\n%s\n= %s" % [
 						selected_row_for_add_source + 1,
 						preview_target_sub + 1,
+						preview_target_sub + 1,
+						preview_target_sub + 1,
+						selected_row_for_add_source + 1,
 						formula_prev[0],
 						formula_prev[1]
 					]
 				else:
-					text_out = "Origen: R%d. Selecciona la fila destino para aplicar Rdest = Rdest - R%d." % [selected_row_for_add_source + 1, selected_row_for_add_source + 1]
+					text_out = "Origen: R%d. Selecciona la fila destino para aplicar [b]Rdest[/b] = Rdest - R%d." % [selected_row_for_add_source + 1, selected_row_for_add_source + 1]
 			else:
 				var n_sub := int(variable_input.value)
 				var tgt_vals := _get_row_values(selected_row_for_add_target, n_sub)
 				var src_vals_sub := _get_row_values(selected_row_for_add_source, n_sub)
-				var formula_sub := _format_addsub_formula(
+				var formula_sub := FormulaFormatter.format_addsub_formula(
 					tgt_vals,
 					src_vals_sub,
 					true,
@@ -943,9 +768,12 @@ func _refresh_operation_ui() -> void:
 					_row_color(selected_row_for_add_source),
 					_row_color(selected_row_for_add_target)
 				)
-				text_out = "Origen: R%d. Destino: R%d. Se aplicó Rdest = Rdest - Rorigen.\n%s\n= %s" % [
+				text_out = "Origen: R%d. Destino: R%d. Se aplico [b]R%d[/b] = R%d - R%d.\n%s\n= %s" % [
 					selected_row_for_add_source + 1,
 					selected_row_for_add_target + 1,
+					selected_row_for_add_target + 1,
+					selected_row_for_add_target + 1,
+					selected_row_for_add_source + 1,
 					formula_sub[0],
 					formula_sub[1]
 				]
@@ -971,7 +799,7 @@ func _check_and_update_solved_rows() -> void:
 		var is_misplaced := (solved_for_index != -1 and not is_solved)
 		
 		# Aplicamos el estado a todos los tiles de esa fila
-		_set_row_visual_state(row_idx, is_solved, is_misplaced, n)
+		matrix_grid.set_row_visual_state(row_idx, is_solved, is_misplaced, n, current_visual_columns)
 
 
 func _is_row_pattern_correct(row_vals: Array, target_row_idx: int, n: int) -> bool:
@@ -988,20 +816,6 @@ func _is_row_pattern_correct(row_vals: Array, target_row_idx: int, n: int) -> bo
 	return true
 
 
-func _set_row_visual_state(row_index: int, is_solved: bool, is_misplaced: bool, n: int) -> void:
-	var logical_total := n + 1
-	var children := matrix_container.get_children()
-	
-	for logical_col in range(logical_total):
-		var idx := _child_index_for_row_col(row_index, logical_col, current_visual_columns, n)
-		if idx >= 0 and idx < children.size():
-			var tile = children[idx]
-			if tile.has_method("set_solved"):
-				tile.set_solved(is_solved)
-			if tile.has_method("set_misplaced"):
-				tile.set_misplaced(is_misplaced)
-
-
 func _set_operation_text(val: String) -> void:
 	if operation_text == null:
 		return
@@ -1016,105 +830,10 @@ func _set_operation_text(val: String) -> void:
 
 
 func _get_row_values(row_index: int, n: int) -> Array:
-	var values: Array = []
-	var logical_total := n + 1
-	var children := matrix_container.get_children()
-
-	for logical_col in range(logical_total):
-		var idx := _child_index_for_row_col(row_index, logical_col, current_visual_columns, n)
-		if idx < 0 or idx >= children.size():
-			values.append(Fraction.new(0))
-			continue
-
-		var tile := children[idx]
-		var val := Fraction.new(0)
-		if tile.has_node("Label"):
-			var label: Label = tile.get_node("Label")
-			val = Fraction.from_string(label.text)
-		values.append(val)
-
-	return values
-
-
-func _child_index_for_row_col(row_index: int, logical_col: int, visual_cols: int, n: int) -> int:
-	if visual_cols <= 0:
-		return -1
-	var base := row_index * visual_cols
-	if logical_col < n:
-		return base + 1 + logical_col  # saltar header Rk
-	return base + visual_cols - 1      # columna aumentada
+	return matrix_grid.get_row_values(row_index, n, current_visual_columns)
 
 
 func _row_color(row_index: int) -> Color:
-	if row_index >= 0 and row_index < row_colors.size():
-		return row_colors[row_index]
+	if row_index >= 0 and row_index < game_state.row_colors.size():
+		return game_state.row_colors[row_index]
 	return Color.WHITE
-
-
-func _colorize(text: String, color: Color) -> String:
-	var hex := color.to_html(false)
-	return "[color=#%s]%s[/color]" % [hex, text]
-
-
-func _format_scalar_formula(row_vals: Array, scalar_display: String, n: int, is_divide: bool, row_color: Color) -> String:
-	var letters := "abcdefghijklmnopqrstuvwxyz"
-	var parts: Array = []
-	var symbol := "/%s" if is_divide else "%s"
-
-	for i in range(row_vals.size()):
-		var val_text := _colorize(row_vals[i].to_string(), row_color)
-		if i < n:
-			var letter := letters[i % letters.length()]
-			parts.append("%s(%s)%s" % [val_text, symbol % scalar_display, letter])
-		else:
-			parts.append("%s(%s)" % [val_text, symbol % scalar_display])
-
-	return "  ".join(parts)
-
-
-func _format_scalar_result(row_vals: Array, scalar_display: String, is_divide: bool, row_color: Color) -> String:
-	if scalar_display == "_" or scalar_display == "-" or scalar_display == "":
-		return ""
-
-	# scalar_display puede ser "1/3"
-	var scalar := Fraction.from_string(scalar_display)
-	if scalar.num == 0 and is_divide:
-		return ""
-
-	var results: Array = []
-	for val in row_vals:
-		var res_val: Fraction
-		if is_divide:
-			res_val = val.div(scalar)
-		else:
-			res_val = val.mul(scalar)
-		results.append(_colorize(res_val.to_string(), row_color))
-	return "  ".join(results)
-
-
-func _format_addsub_formula(target_vals: Array, source_vals: Array, is_subtract: bool, n: int, source_color: Color, target_color: Color) -> Array:
-	var symbol := "-" if is_subtract else "+"
-	var letters := "abcdefghijklmnopqrstuvwxyz"
-	var parts: Array = []
-	var results: Array = []
-
-	for i in range(target_vals.size()):
-		var tgt: Fraction = target_vals[i]
-		var src: Fraction = source_vals[i]
-		var tgt_text := _colorize(tgt.to_string(), target_color)
-		var src_text := _colorize(src.to_string(), source_color)
-		var letter := ""
-		if i < n:
-			letter = letters[i % letters.length()]
-			parts.append("%s %s %s%s" % [tgt_text, symbol, src_text, letter])
-		else:
-			parts.append("%s %s %s" % [tgt_text, symbol, src_text])
-
-		var res: Fraction
-		if is_subtract:
-			res = tgt.sub(src)
-		else:
-			res = tgt.add(src)
-		results.append(_colorize(res.to_string(), target_color))
-
-	return [ "  ".join(parts), "  ".join(results) ]
